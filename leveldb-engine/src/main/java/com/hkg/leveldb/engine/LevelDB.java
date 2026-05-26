@@ -21,6 +21,7 @@ import com.hkg.leveldb.manifest.VersionSet;
 import com.hkg.leveldb.memtable.SkipListMemTable;
 import com.hkg.leveldb.sstable.BlockBasedTableReader;
 import com.hkg.leveldb.sstable.BlockBasedTableWriter;
+import com.hkg.leveldb.wal.LogReader;
 import com.hkg.leveldb.wal.LogWriter;
 import com.hkg.leveldb.wal.MutationCodec;
 
@@ -98,28 +99,90 @@ public final class LevelDB implements KvEngine {
 
     public static LevelDB open(Path dbDir, boolean compressOutput) throws IOException {
         Files.createDirectories(dbDir);
-        VersionSet vs;
-        if (Files.exists(dbDir.resolve("CURRENT"))) {
-            vs = VersionSet.open(dbDir);
-        } else {
-            vs = VersionSet.createFresh(dbDir);
+        boolean freshDb = !Files.exists(dbDir.resolve("CURRENT"));
+        VersionSet vs = freshDb ? VersionSet.createFresh(dbDir) : VersionSet.open(dbDir);
+
+        // Defensive sweep: remove .ldb.tmp and any orphan .ldb files not referenced by the Version.
+        sweepOrphans(dbDir, vs.current());
+
+        ConcurrentHashMap<FileNumber, BlockBasedTableReader> tables = new ConcurrentHashMap<>();
+        for (FileNumber fn : vs.current().allFileNumbers()) {
+            tables.put(fn, BlockBasedTableReader.open(dbDir.resolve(fn.tableFileName())));
         }
-        // Allocate a new WAL file and record it.
+
+        // WAL replay: rebuild the MemTable from the prior WAL recorded in MANIFEST.
+        SkipListMemTable recoveredMt = new SkipListMemTable();
+        long maxSeq = vs.current().lastSequence();
+        long priorLogNum = vs.current().logNumber();
+        Path priorWalPath = (priorLogNum > 0)
+            ? dbDir.resolve(new FileNumber(priorLogNum).logFileName())
+            : null;
+        boolean replayed = false;
+        if (priorWalPath != null && Files.exists(priorWalPath)) {
+            replayed = true;
+            try (LogReader reader = LogReader.open(priorWalPath)) {
+                Iterator<byte[]> it = reader.records();
+                while (it.hasNext()) {
+                    MutationRecord mr = MutationCodec.decode(it.next());
+                    if (mr instanceof MutationRecord.Put put) {
+                        recoveredMt.put(put.key(), put.value(), put.sequence());
+                    } else if (mr instanceof MutationRecord.Delete del) {
+                        recoveredMt.delete(del.key(), del.sequence());
+                    }
+                    long s = mr.sequence().value();
+                    if (s > maxSeq) maxSeq = s;
+                }
+            }
+        }
+
+        // Allocate a new active WAL for subsequent writes.
         long walNum = vs.current().nextFileNumber();
         Path walPath = dbDir.resolve(new FileNumber(walNum).logFileName());
         LogWriter wal = LogWriter.open(walPath, true);
         vs.apply(List.of(
             new VersionEdit.SetNextFileNumber(walNum + 1L),
-            new VersionEdit.SetLogNumber(walNum)));
+            new VersionEdit.SetLogNumber(walNum),
+            new VersionEdit.SetLastSequence(maxSeq)));
 
-        ConcurrentHashMap<FileNumber, BlockBasedTableReader> tables = new ConcurrentHashMap<>();
-        for (FileNumber fn : vs.current().allFileNumbers()) {
-            Path p = dbDir.resolve(fn.tableFileName());
-            tables.put(fn, BlockBasedTableReader.open(p));
-        }
-        AtomicLong seq = new AtomicLong(vs.current().lastSequence() + 1L);
-        return new LevelDB(dbDir, vs, new SkipListMemTable(), wal,
+        AtomicLong seq = new AtomicLong(maxSeq + 1L);
+        LevelDB db = new LevelDB(dbDir, vs, recoveredMt, wal,
             new FileNumber(walNum), tables, seq, compressOutput);
+
+        // If we recovered any in-memory state, persist it as an L0 SSTable so the old WAL
+        // can be safely deleted. doFlush() opens a fresh WAL of its own and deletes the
+        // one we just allocated; net result is one new L0 file + a clean WAL on disk.
+        if (replayed && recoveredMt.size() > 0) {
+            db.flush();
+        }
+        if (replayed && Files.exists(priorWalPath)) {
+            Files.deleteIfExists(priorWalPath);
+        }
+
+        return db;
+    }
+
+    /** Remove .ldb.tmp orphans + any .ldb files not referenced by the recovered Version. */
+    private static void sweepOrphans(Path dbDir, Version v) throws IOException {
+        java.util.Set<Long> validNums = new java.util.HashSet<>();
+        for (FileNumber fn : v.allFileNumbers()) validNums.add(fn.value());
+        try (var stream = Files.list(dbDir)) {
+            for (Path p : stream.toList()) {
+                String name = p.getFileName().toString();
+                if (name.endsWith(".ldb.tmp")) {
+                    Files.deleteIfExists(p);
+                } else if (name.endsWith(".ldb")) {
+                    String base = name.substring(0, name.length() - 4);
+                    try {
+                        long n = Long.parseLong(base);
+                        if (!validNums.contains(n)) {
+                            Files.deleteIfExists(p);
+                        }
+                    } catch (NumberFormatException ignored) {
+                        // Unrelated file; leave it alone.
+                    }
+                }
+            }
+        }
     }
 
     // -------------------------------------------------------------------- writes
@@ -434,6 +497,28 @@ public final class LevelDB implements KvEngine {
                 if (activeMemTable.size() > 0) {
                     doFlush();
                 }
+                walWriter.close();
+                for (BlockBasedTableReader r : openTables.values()) {
+                    r.close();
+                }
+                openTables.clear();
+                versions.close();
+            } catch (IOException e) {
+                throw new UncheckedIOException(e);
+            }
+        }
+    }
+
+    /**
+     * Close file handles WITHOUT flushing the active MemTable. The WAL is
+     * already fsynced (synchronous mode) so every acked write is durable;
+     * the MemTable contents will be recovered via WAL replay on the next
+     * {@link #open(Path)}. Used by the integration test suite to simulate
+     * a process crash.
+     */
+    public void closeWithoutFlush() {
+        synchronized (writeLock) {
+            try {
                 walWriter.close();
                 for (BlockBasedTableReader r : openTables.values()) {
                     r.close();
