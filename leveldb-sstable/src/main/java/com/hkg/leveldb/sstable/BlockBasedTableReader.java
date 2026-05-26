@@ -1,6 +1,9 @@
 package com.hkg.leveldb.sstable;
 
+import com.hkg.leveldb.blockcache.BlockCache;
+import com.hkg.leveldb.blockcache.CacheKey;
 import com.hkg.leveldb.bloom.BloomFilter;
+import com.hkg.leveldb.common.FileNumber;
 import com.hkg.leveldb.common.InternalKey;
 import com.hkg.leveldb.common.InternalKeyCodec;
 import com.hkg.leveldb.common.Key;
@@ -35,19 +38,34 @@ public final class BlockBasedTableReader implements Closeable {
     private final Footer footer;
     private final Block indexBlock;
     private final BloomFilter bloomFilter;
-    private final CRC32 crc = new CRC32();
+    private final FileNumber fileNumber;
+    private final BlockCache cache;
 
     private BlockBasedTableReader(FileChannel channel, long fileSize, Footer footer,
-                                   Block indexBlock, BloomFilter bloomFilter) {
+                                   Block indexBlock, BloomFilter bloomFilter,
+                                   FileNumber fileNumber, BlockCache cache) {
         this.channel = channel;
         this.fileSize = fileSize;
         this.footer = footer;
         this.indexBlock = indexBlock;
         this.bloomFilter = bloomFilter;
+        this.fileNumber = fileNumber;
+        this.cache = cache;
     }
 
-    /** Open and parse an SSTable file. */
+    /** Open and parse an SSTable file with no block cache (every data-block read hits disk). */
     public static BlockBasedTableReader open(Path path) throws IOException {
+        return open(path, null, null);
+    }
+
+    /**
+     * Open and parse an SSTable file. When {@code cache} is non-null, data-block
+     * reads are routed through the cache keyed by {@code (fileNumber, blockOffset)}.
+     * The index and bloom-filter blocks are loaded eagerly at open time and are
+     * not cached separately — they live in the reader instance.
+     */
+    public static BlockBasedTableReader open(Path path, FileNumber fileNumber, BlockCache cache)
+        throws IOException {
         FileChannel ch = FileChannel.open(path, StandardOpenOption.READ);
         long size = ch.size();
         if (size < Footer.ENCODED_LENGTH) {
@@ -59,17 +77,19 @@ public final class BlockBasedTableReader implements Closeable {
         readAt(ch, size - Footer.ENCODED_LENGTH, footerBuf);
         Footer footer = Footer.decode(footerBuf.array());
 
-        // Reader instance constructed up front so we can use its readBlock to parse the bloom/index.
-        BlockBasedTableReader reader = new BlockBasedTableReader(ch, size, footer, null, null);
+        // Bootstrap reader without the cache — the index/bloom blocks are loaded directly,
+        // skipping the cache (they would just churn it on open and they're already in-memory).
+        BlockBasedTableReader bootstrap = new BlockBasedTableReader(
+            ch, size, footer, null, null, fileNumber, null);
 
-        byte[] indexBytes = reader.readBlock(footer.indexHandle());
+        byte[] indexBytes = bootstrap.readBlockDirect(footer.indexHandle());
         Block indexBlock = new Block(indexBytes);
 
-        byte[] metaIndexBytes = reader.readBlock(footer.metaIndexHandle());
+        byte[] metaIndexBytes = bootstrap.readBlockDirect(footer.metaIndexHandle());
         Block metaIndex = new Block(metaIndexBytes);
-        BloomFilter bloom = loadBloomFilter(reader, metaIndex);
+        BloomFilter bloom = loadBloomFilter(bootstrap, metaIndex);
 
-        return new BlockBasedTableReader(ch, size, footer, indexBlock, bloom);
+        return new BlockBasedTableReader(ch, size, footer, indexBlock, bloom, fileNumber, cache);
     }
 
     /**
@@ -205,13 +225,25 @@ public final class BlockBasedTableReader implements Closeable {
     // ---------- internals ----------
 
     /**
-     * Read a block's payload bytes (decompressed if needed). Verifies CRC32
-     * over (payload || compression-type) before returning.
+     * Read a block's payload bytes (decompressed if needed). If this reader is
+     * wired to a {@link BlockCache} and a {@link FileNumber} (i.e. opened via
+     * {@link #open(Path, FileNumber, BlockCache)}), the read is routed through
+     * the cache so a repeated read of the same block is served from memory.
+     * A CRC32 mismatch on the on-disk bytes throws
+     * {@link BlockChecksumMismatchException}.
      */
     byte[] readBlock(BlockHandle handle) throws IOException {
+        if (cache != null && fileNumber != null) {
+            CacheKey ck = new CacheKey(fileNumber, handle.offset());
+            return cache.lookupOrLoad(ck, () -> readBlockDirect(handle));
+        }
+        return readBlockDirect(handle);
+    }
+
+    /** Bypass the cache: read straight from disk and verify CRC. */
+    byte[] readBlockDirect(BlockHandle handle) throws IOException {
         long payloadStart = handle.offset();
         long payloadLen = handle.length();
-        long trailerStart = payloadStart + payloadLen;
         long totalLen = payloadLen + 1L + 4L; // payload + compType + crc
         if (payloadStart < 0 || totalLen > fileSize - payloadStart) {
             throw new SsTableFormatException("block handle out of range");
@@ -224,7 +256,7 @@ public final class BlockBasedTableReader implements Closeable {
         int crcStored = ByteBuffer.wrap(raw.array(), (int) payloadLen + 1, 4)
             .order(ByteOrder.LITTLE_ENDIAN).getInt();
 
-        crc.reset();
+        CRC32 crc = new CRC32();
         crc.update(body, 0, body.length);
         crc.update(compType);
         int crcActual = (int) crc.getValue();
@@ -251,10 +283,13 @@ public final class BlockBasedTableReader implements Closeable {
     }
 
     private static void readAt(FileChannel ch, long position, ByteBuffer dst) throws IOException {
-        ch.position(position);
+        // Positional read keeps the channel's current position untouched, so concurrent
+        // readers sharing this channel don't race on the cursor.
+        long pos = position;
         while (dst.hasRemaining()) {
-            int n = ch.read(dst);
-            if (n < 0) throw new SsTableFormatException("unexpected EOF at " + ch.position());
+            int n = ch.read(dst, pos);
+            if (n < 0) throw new SsTableFormatException("unexpected EOF at " + pos);
+            pos += n;
         }
         dst.flip();
     }

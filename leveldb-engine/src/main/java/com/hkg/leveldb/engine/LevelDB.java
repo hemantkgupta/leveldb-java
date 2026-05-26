@@ -1,5 +1,7 @@
 package com.hkg.leveldb.engine;
 
+import com.hkg.leveldb.blockcache.BlockCache;
+import com.hkg.leveldb.blockcache.LruBlockCache;
 import com.hkg.leveldb.common.Constants;
 import com.hkg.leveldb.common.FileNumber;
 import com.hkg.leveldb.common.InternalKey;
@@ -71,11 +73,13 @@ public final class LevelDB implements KvEngine {
     private final Set<Long> activeSnapshotSeqs = ConcurrentHashMap.newKeySet();
     private final Object writeLock = new Object();
     private final boolean compressOutput;
+    private final BlockCache blockCache;
 
     private LevelDB(Path dbDir, VersionSet versions, SkipListMemTable mt,
                      LogWriter walWriter, FileNumber walNumber,
                      ConcurrentHashMap<FileNumber, BlockBasedTableReader> tables,
-                     AtomicLong nextSequence, boolean compressOutput) {
+                     AtomicLong nextSequence, boolean compressOutput,
+                     BlockCache blockCache) {
         this.dbDir = dbDir;
         this.versions = versions;
         this.activeMemTable = mt;
@@ -84,6 +88,7 @@ public final class LevelDB implements KvEngine {
         this.openTables = tables;
         this.nextSequence = nextSequence;
         this.compressOutput = compressOutput;
+        this.blockCache = blockCache;
     }
 
     /**
@@ -94,10 +99,20 @@ public final class LevelDB implements KvEngine {
      * separately by {@link #recoverWal(Path)} — wired up in CP 9.
      */
     public static LevelDB open(Path dbDir) throws IOException {
-        return open(dbDir, true);
+        return open(dbDir, true, new LruBlockCache(Constants.BLOCK_CACHE_DEFAULT_BYTES));
     }
 
     public static LevelDB open(Path dbDir, boolean compressOutput) throws IOException {
+        return open(dbDir, compressOutput, new LruBlockCache(Constants.BLOCK_CACHE_DEFAULT_BYTES));
+    }
+
+    /**
+     * Open the engine with an explicit {@link BlockCache}. Tests can pass a
+     * small cache to exercise eviction or a shared cache to verify cross-reader
+     * hit rates. The cache is per-engine; LevelDB has no cross-instance sharing.
+     */
+    public static LevelDB open(Path dbDir, boolean compressOutput, BlockCache blockCache)
+        throws IOException {
         Files.createDirectories(dbDir);
         boolean freshDb = !Files.exists(dbDir.resolve("CURRENT"));
         VersionSet vs = freshDb ? VersionSet.createFresh(dbDir) : VersionSet.open(dbDir);
@@ -107,7 +122,7 @@ public final class LevelDB implements KvEngine {
 
         ConcurrentHashMap<FileNumber, BlockBasedTableReader> tables = new ConcurrentHashMap<>();
         for (FileNumber fn : vs.current().allFileNumbers()) {
-            tables.put(fn, BlockBasedTableReader.open(dbDir.resolve(fn.tableFileName())));
+            tables.put(fn, BlockBasedTableReader.open(dbDir.resolve(fn.tableFileName()), fn, blockCache));
         }
 
         // WAL replay: rebuild the MemTable from the prior WAL recorded in MANIFEST.
@@ -146,7 +161,7 @@ public final class LevelDB implements KvEngine {
 
         AtomicLong seq = new AtomicLong(maxSeq + 1L);
         LevelDB db = new LevelDB(dbDir, vs, recoveredMt, wal,
-            new FileNumber(walNum), tables, seq, compressOutput);
+            new FileNumber(walNum), tables, seq, compressOutput, blockCache);
 
         // If we recovered any in-memory state, persist it as an L0 SSTable so the old WAL
         // can be safely deleted. doFlush() opens a fresh WAL of its own and deletes the
@@ -405,8 +420,8 @@ public final class LevelDB implements KvEngine {
             new VersionEdit.SetLastSequence(lastSeq),
             new VersionEdit.NewFile(0, fm)));
 
-        // Open the new SSTable for reads.
-        openTables.put(tableFn, BlockBasedTableReader.open(tablePath));
+        // Open the new SSTable for reads — wired into the shared block cache.
+        openTables.put(tableFn, BlockBasedTableReader.open(tablePath, tableFn, blockCache));
 
         // Discard the frozen MemTable.
         frozenMemTable = null;
@@ -433,8 +448,11 @@ public final class LevelDB implements KvEngine {
                 Constants.SST_FILE_TARGET_SIZE_BYTES, dbDir,
                 () -> new FileNumber(allocCounter.getAndIncrement()),
                 fn -> openTables.computeIfAbsent(fn, k -> {
-                    try { return BlockBasedTableReader.open(dbDir.resolve(k.tableFileName())); }
-                    catch (IOException e) { throw new UncheckedIOException(e); }
+                    try {
+                        return BlockBasedTableReader.open(dbDir.resolve(k.tableFileName()), k, blockCache);
+                    } catch (IOException e) {
+                        throw new UncheckedIOException(e);
+                    }
                 }),
                 compressOutput);
 
@@ -455,8 +473,11 @@ public final class LevelDB implements KvEngine {
             // Open new SSTable readers; close + delete obsolete files.
             for (FileMetadata out : outputs) {
                 openTables.computeIfAbsent(out.fileNumber(), k -> {
-                    try { return BlockBasedTableReader.open(dbDir.resolve(k.tableFileName())); }
-                    catch (IOException e) { throw new UncheckedIOException(e); }
+                    try {
+                        return BlockBasedTableReader.open(dbDir.resolve(k.tableFileName()), k, blockCache);
+                    } catch (IOException e) {
+                        throw new UncheckedIOException(e);
+                    }
                 });
             }
             for (FileMetadata fm : job.inputs()) {
@@ -479,6 +500,11 @@ public final class LevelDB implements KvEngine {
 
     public Version currentVersion() {
         return versions.current();
+    }
+
+    /** Shared block cache used by every SSTable reader this engine owns. */
+    public BlockCache blockCache() {
+        return blockCache;
     }
 
     public long lastSequence() {
