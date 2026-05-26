@@ -45,4 +45,16 @@ public final class Constants {
 
     /** Maximum legal sequence number (2^56 - 1). */
     public static final long MAX_SEQUENCE_NUMBER = (1L << 56) - 1L;
+
+    /** MANIFEST log rotation threshold (4 MiB). */
+    public static final long MANIFEST_ROTATION_BYTES = 4L * 1024L * 1024L;
+
+    /** SSTable target file size used during compaction output (2 MiB). */
+    public static final long SST_FILE_TARGET_SIZE_BYTES = 2L * 1024L * 1024L;
+
+    /** L0 file count above which writes slow down. */
+    public static final int L0_SLOWDOWN_WRITES_TRIGGER = 8;
+
+    /** L0 file count above which writes stop until compaction catches up. */
+    public static final int L0_STOP_WRITES_TRIGGER = 12;
 }

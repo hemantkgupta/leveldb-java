@@ -1,9 +1,5 @@
-package com.hkg.leveldb.sstable;
+package com.hkg.leveldb.common;
 
-import com.hkg.leveldb.common.InternalKey;
-import com.hkg.leveldb.common.Key;
-import com.hkg.leveldb.common.SequenceNumber;
-import com.hkg.leveldb.common.ValueType;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -27,7 +23,6 @@ class InternalKeyCodecTest {
         // newer (higher seq) sorts BEFORE older — descending sequence.
         assertThat(InternalKeyCodec.compareInternalBytes(newerBytes, olderBytes)).isNegative();
         assertThat(InternalKeyCodec.compareInternalBytes(olderBytes, newerBytes)).isPositive();
-        // Java InternalKey comparator must agree.
         assertThat(newer.compareTo(older)).isNegative();
     }
 

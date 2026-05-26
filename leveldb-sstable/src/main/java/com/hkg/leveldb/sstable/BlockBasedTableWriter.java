@@ -3,6 +3,7 @@ package com.hkg.leveldb.sstable;
 import com.hkg.leveldb.bloom.BloomFilter;
 import com.hkg.leveldb.common.Constants;
 import com.hkg.leveldb.common.InternalKey;
+import com.hkg.leveldb.common.InternalKeyCodec;
 
 import java.io.Closeable;
 import java.io.IOException;

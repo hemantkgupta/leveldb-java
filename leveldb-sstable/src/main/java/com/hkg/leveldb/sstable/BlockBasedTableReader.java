@@ -2,6 +2,7 @@ package com.hkg.leveldb.sstable;
 
 import com.hkg.leveldb.bloom.BloomFilter;
 import com.hkg.leveldb.common.InternalKey;
+import com.hkg.leveldb.common.InternalKeyCodec;
 import com.hkg.leveldb.common.Key;
 import com.hkg.leveldb.common.SequenceNumber;
 import com.hkg.leveldb.common.Slice;

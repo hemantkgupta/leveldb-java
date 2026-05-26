@@ -38,7 +38,7 @@ project(':leveldb-memtable')      { dependencies { api project(':leveldb-common'
 project(':leveldb-wal')           { dependencies { api project(':leveldb-common') } }
 project(':leveldb-sstable')       { dependencies { api project(':leveldb-common'); api project(':leveldb-bloom') } }
 project(':leveldb-bloom')         { dependencies { api project(':leveldb-common') } }
-project(':leveldb-manifest')      { dependencies { api project(':leveldb-common') } }
+project(':leveldb-manifest')      { dependencies { api project(':leveldb-common'); api project(':leveldb-wal') } }
 project(':leveldb-compaction')    { dependencies { api project(':leveldb-common'); api project(':leveldb-sstable'); api project(':leveldb-manifest') } }
 project(':leveldb-block-cache')   { dependencies { api project(':leveldb-common') } }
 project(':leveldb-engine') {
