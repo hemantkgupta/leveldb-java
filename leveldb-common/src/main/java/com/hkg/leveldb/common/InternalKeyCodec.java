@@ -65,7 +65,7 @@ public final class InternalKeyCodec {
         if (sa != sb) return Long.compare(sb, sa); // sequence DESC
         byte ta = (byte) (pa & 0xff);
         byte tb = (byte) (pb & 0xff);
-        return Byte.compare(ta, tb);
+        return Byte.compare(tb, ta); // type DESC — same as InternalKey.compareTo
     }
 
     public static byte[] userKeyOf(byte[] internalKeyBytes) {

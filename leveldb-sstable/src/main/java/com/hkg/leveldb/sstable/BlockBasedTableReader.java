@@ -4,6 +4,7 @@ import com.hkg.leveldb.bloom.BloomFilter;
 import com.hkg.leveldb.common.InternalKey;
 import com.hkg.leveldb.common.InternalKeyCodec;
 import com.hkg.leveldb.common.Key;
+import com.hkg.leveldb.common.KeyLookup;
 import com.hkg.leveldb.common.SequenceNumber;
 import com.hkg.leveldb.common.Slice;
 import com.hkg.leveldb.common.ValueType;
@@ -112,6 +113,40 @@ public final class BlockBasedTableReader implements Closeable {
     /** Lookup at the maximum sequence (no snapshot). */
     public Optional<Slice> get(Key userKey) throws IOException {
         return get(userKey, new SequenceNumber(SequenceNumber.MAX));
+    }
+
+    /**
+     * Three-way lookup used by the engine's read path: distinguishes
+     * {@code Found(value)}, {@code Tombstoned} (the engine must NOT probe
+     * older files), and {@code Absent} (the engine keeps looking).
+     */
+    public KeyLookup lookup(Key userKey, SequenceNumber asOf) throws IOException {
+        if (!bloomFilter.mightContain(userKey)) {
+            return KeyLookup.ABSENT;
+        }
+        InternalKey probe = new InternalKey(userKey, asOf, ValueType.VALUE);
+        byte[] probeBytes = InternalKeyCodec.encode(probe);
+
+        int idx = indexBlock.seekIndex(probeBytes, InternalKeyCodec::compareInternalBytes);
+        if (idx < 0) return KeyLookup.ABSENT;
+        Block.Entry indexEntry = indexBlock.get(idx);
+        BlockHandle dataHandle = BlockHandle.readFrom(
+            ByteBuffer.wrap(indexEntry.value()).order(ByteOrder.LITTLE_ENDIAN));
+        byte[] dataBytes = readBlock(dataHandle);
+        Block dataBlock = new Block(dataBytes);
+
+        int hitIdx = dataBlock.seekIndex(probeBytes, InternalKeyCodec::compareInternalBytes);
+        if (hitIdx < 0) return KeyLookup.ABSENT;
+        Block.Entry hit = dataBlock.get(hitIdx);
+        byte[] hitUserKey = InternalKeyCodec.userKeyOf(hit.key());
+        if (!java.util.Arrays.equals(hitUserKey, userKey.bytes())) {
+            return KeyLookup.ABSENT;
+        }
+        byte tag = InternalKeyCodec.tagOf(hit.key());
+        if (tag == ValueType.DELETION.tag()) {
+            return KeyLookup.TOMBSTONED;
+        }
+        return new KeyLookup.Found(Slice.of(hit.value()));
     }
 
     /**

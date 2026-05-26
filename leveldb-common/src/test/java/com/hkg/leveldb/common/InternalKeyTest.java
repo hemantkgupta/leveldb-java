@@ -42,7 +42,10 @@ class InternalKeyTest {
         Key k = Key.of("foo");
         InternalKey value = new InternalKey(k, new SequenceNumber(1L), ValueType.VALUE);
         InternalKey deletion = new InternalKey(k, new SequenceNumber(1L), ValueType.DELETION);
-        // Order matters only that it's deterministic — Deletion (tag=0) < Value (tag=1).
-        assertThat(deletion.compareTo(value)).isNegative();
+        // LevelDB orders by packed trailer DESC. Value (tag=1) packs higher than Deletion
+        // (tag=0) at the same sequence, so Value sorts BEFORE Deletion. This is what makes
+        // a probe at (userKey, S, VALUE) find a same-sequence tombstone via ceilingEntry.
+        assertThat(value.compareTo(deletion)).isNegative();
+        assertThat(deletion.compareTo(value)).isPositive();
     }
 }

@@ -2,6 +2,7 @@ package com.hkg.leveldb.memtable;
 
 import com.hkg.leveldb.common.InternalKey;
 import com.hkg.leveldb.common.Key;
+import com.hkg.leveldb.common.KeyLookup;
 import com.hkg.leveldb.common.MutationRecord;
 import com.hkg.leveldb.common.SequenceNumber;
 import com.hkg.leveldb.common.Slice;
@@ -107,6 +108,19 @@ public final class SkipListMemTable {
     /** Convenience overload — snapshot-less lookup. */
     public Optional<MemTableLookup> get(Key key) {
         return get(key, null);
+    }
+
+    /**
+     * Three-way lookup used by the engine's read path: distinguishes
+     * Found / Tombstoned / Absent. The MemTable returns Tombstoned if the
+     * newest visible record is a deletion — the engine MUST stop probing
+     * older sources.
+     */
+    public KeyLookup lookup(Key key, SequenceNumber snapshotOrNull) {
+        Optional<MemTableLookup> hit = get(key, snapshotOrNull);
+        if (hit.isEmpty()) return KeyLookup.ABSENT;
+        if (hit.get().isDeletion()) return KeyLookup.TOMBSTONED;
+        return new KeyLookup.Found(hit.get().value());
     }
 
     /** Approximate memtable memory footprint in bytes. */
