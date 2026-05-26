@@ -1,0 +1,58 @@
+allprojects {
+    group = 'com.hkg.leveldb'
+    version = '0.1.0-SNAPSHOT'
+
+    repositories {
+        mavenCentral()
+    }
+}
+
+subprojects {
+    apply plugin: 'java-library'
+
+    java {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    dependencies {
+        testImplementation platform('org.junit:junit-bom:5.10.2')
+        testImplementation 'org.junit.jupiter:junit-jupiter'
+        testImplementation 'org.assertj:assertj-core:3.25.3'
+        testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    }
+
+    test {
+        useJUnitPlatform()
+    }
+
+    compileJava.options.encoding = 'UTF-8'
+    compileTestJava.options.encoding = 'UTF-8'
+}
+
+// ----------------------------------------------------------------------------
+// Module dependency wiring (matches docs/architecture.md)
+// ----------------------------------------------------------------------------
+
+project(':leveldb-memtable')      { dependencies { api project(':leveldb-common') } }
+project(':leveldb-wal')           { dependencies { api project(':leveldb-common') } }
+project(':leveldb-sstable')       { dependencies { api project(':leveldb-common'); api project(':leveldb-bloom') } }
+project(':leveldb-bloom')         { dependencies { api project(':leveldb-common') } }
+project(':leveldb-manifest')      { dependencies { api project(':leveldb-common') } }
+project(':leveldb-compaction')    { dependencies { api project(':leveldb-common'); api project(':leveldb-sstable'); api project(':leveldb-manifest') } }
+project(':leveldb-block-cache')   { dependencies { api project(':leveldb-common') } }
+project(':leveldb-engine') {
+    dependencies {
+        api project(':leveldb-common')
+        api project(':leveldb-memtable')
+        api project(':leveldb-wal')
+        api project(':leveldb-sstable')
+        api project(':leveldb-bloom')
+        api project(':leveldb-manifest')
+        api project(':leveldb-compaction')
+        api project(':leveldb-block-cache')
+    }
+}
+project(':leveldb-tools')         { dependencies { api project(':leveldb-engine') } }
+project(':leveldb-test-cluster')  { dependencies { api project(':leveldb-engine') } }
+project(':leveldb-cli')           { dependencies { api project(':leveldb-engine'); api project(':leveldb-tools') } }
