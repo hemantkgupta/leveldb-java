@@ -47,8 +47,8 @@ jenv local 17.0
 
 | Phase | CPs | Status |
 |---|---|---|
-| Phase 1 — Foundation | 4 | _in progress_ |
-| Phase 2 — LSM machinery | 5 | _pending_ |
+| Phase 1 — Foundation | 4 | _complete_ |
+| Phase 2 — LSM machinery | 5 | _in progress (CP 5 done)_ |
 | Phase 3 — Polish + verification | 3 | _pending_ |
 
 After Phase 3 the engine is feature-complete vs LevelDB 2011. See [the implementation plan](https://github.com/hemantkgupta/CSE-Raw/blob/main/raw-blog/storage-engines/leveldb-implementation-plan.md) for what's in scope and what's not (deliberate stop point — multi-threaded compaction / tiered / Dynamic Leveled / column families / four-layer integrity / per-host RateLimiter / UDTs belong to the RocksDB extension).

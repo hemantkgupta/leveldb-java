@@ -63,6 +63,15 @@ public final class BloomFilter {
     /** Underlying bit array, not defensively copied — callers must not mutate. */
     public byte[] rawBits() { return bits; }
 
+    /**
+     * Reconstruct a BloomFilter from previously serialised parameters. The
+     * SSTable writer stores {@code numHashes} + {@code numBits} alongside the
+     * bit array in the filter meta-block.
+     */
+    public static BloomFilter fromRaw(byte[] bits, int numBits, int numHashes) {
+        return new BloomFilter(bits, numBits, numHashes);
+    }
+
     // ---------------- hashing ----------------
 
     /** A small, fast 32-bit hash (FNV-1a). LevelDB uses MurmurHash; FNV-1a is
