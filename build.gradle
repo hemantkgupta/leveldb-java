@@ -54,5 +54,5 @@ project(':leveldb-engine') {
     }
 }
 project(':leveldb-tools')         { dependencies { api project(':leveldb-engine') } }
-project(':leveldb-test-cluster')  { dependencies { api project(':leveldb-engine') } }
+project(':leveldb-test-cluster')  { dependencies { api project(':leveldb-engine'); api project(':leveldb-tools') } }
 project(':leveldb-cli')           { dependencies { api project(':leveldb-engine'); api project(':leveldb-tools') } }

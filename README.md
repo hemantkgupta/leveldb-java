@@ -49,9 +49,9 @@ jenv local 17.0
 |---|---|---|
 | Phase 1 — Foundation | 4 | _complete_ |
 | Phase 2 — LSM machinery | 5 | _complete_ |
-| Phase 3 — Polish + verification | 3 | _pending_ |
+| Phase 3 — Polish + verification | 3 | _complete_ |
 
-After Phase 3 the engine is feature-complete vs LevelDB 2011. See [the implementation plan](https://github.com/hemantkgupta/CSE-Raw/blob/main/raw-blog/storage-engines/leveldb-implementation-plan.md) for what's in scope and what's not (deliberate stop point — multi-threaded compaction / tiered / Dynamic Leveled / column families / four-layer integrity / per-host RateLimiter / UDTs belong to the RocksDB extension).
+All 12 checkpoints land at the engine's defended stop point: 181 tests across 12 modules, a shared 8 MiB LRU block cache wired through every SSTable reader, `DbVerify`/`DbDump`/`leveldb-cli` for offline inspection, and a randomised crash-and-recover stress test that walks every code path under churn. See [the implementation plan](https://github.com/hemantkgupta/CSE-Raw/blob/main/raw-blog/storage-engines/leveldb-implementation-plan.md) for what's deliberately out of scope — multi-threaded compaction, tiered / Dynamic Leveled compaction, column families, four-layer integrity, per-host RateLimiter, and UDTs belong to the RocksDB extension.
 
 ## Why this exists
 
